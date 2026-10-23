@@ -1,20 +1,38 @@
 {
     "max_results": {
-        "description": "返回的出处条目数量上限",
+        "description": "返回的候选/出处条目数量上限",
         "type": "int",
         "hint": "1-20",
         "default": 8
     },
     "timeout": {
-        "description": "Yandex 请求超时（秒）",
+        "description": "单引擎请求超时（秒）",
         "type": "int",
         "hint": "默认 20",
         "default": 20
     },
     "proxy": {
-        "description": "访问 Yandex 使用的代理",
+        "description": "访问外网引擎使用的代理",
         "type": "string",
         "hint": "如 http://127.0.0.1:7890，留空则直连",
+        "default": ""
+    },
+    "saucenao_api_key": {
+        "description": "SauceNAO API key",
+        "type": "string",
+        "hint": "saucenao.com 免费注册获取，100 次/天；直接返回作者与 X 原帖 URL，强烈建议配置",
+        "default": ""
+    },
+    "gcv_api_key": {
+        "description": "Google Cloud Vision API key",
+        "type": "string",
+        "hint": "GCP 启用 Vision API 后获取（付费）；提供 webDetection 匹配页",
+        "default": ""
+    },
+    "ascii2d_cf_clearance": {
+        "description": "ascii2d cf_clearance cookie",
+        "type": "string",
+        "hint": "ascii2d 当前有 Cloudflare 盾；从浏览器复制 cf_clearance cookie 可绕过（会过期）",
         "default": ""
     }
 }
