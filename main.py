@@ -128,7 +128,7 @@ class SauceFinderPlugin(Star):
             return
 
         # 3) Yandex 候选做感知哈希硬确认（同图 +20% 置信度）
-        phash_scores = await self._phash_verify_yandex(
+        phash_scores = await self._phash_verify_all(
             candidates, image_bytes, proxy, timeout
         )
 
