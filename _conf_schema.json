@@ -1,0 +1,23 @@
+[
+    {
+        "name": "max_results",
+        "description": "返回的出处条目数量上限",
+        "type": "int",
+        "hint": "1-20，默认 8",
+        "default": 8
+    },
+    {
+        "name": "timeout",
+        "description": "Yandex 请求超时（秒）",
+        "type": "int",
+        "hint": "默认 20",
+        "default": 20
+    },
+    {
+        "name": "proxy",
+        "description": "访问 Yandex 使用的代理",
+        "type": "string",
+        "hint": "如 http://127.0.0.1:7890，留空则直连",
+        "default": ""
+    }
+]

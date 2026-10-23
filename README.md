@@ -1,14 +1,20 @@
-# astrbot-plugin-helloworld
+# astrbot_plugin_saucefinder
 
-AstrBot 插件模板 / A template plugin for AstrBot plugin feature
+AstrBot 反向图片搜索插件：发送图片，自动通过 Yandex Images 反向搜索，返回图片出处（原图链接、画师/Coser 主页署名）。
 
-> [!NOTE]
-> This repo is just a template of [AstrBot](https://github.com/AstrBotDevs/AstrBot) Plugin.
-> 
-> [AstrBot](https://github.com/AstrBotDevs/AstrBot) is an agentic assistant for both personal and group conversations. It can be deployed across dozens of mainstream instant messaging platforms, including QQ, Telegram, Feishu, DingTalk, Slack, LINE, Discord, Matrix, etc. In addition, it provides a reliable and extensible conversational AI infrastructure for individuals, developers, and teams. Whether you need a personal AI companion, an intelligent customer support agent, an automation assistant, or an enterprise knowledge base, AstrBot enables you to quickly build AI applications directly within your existing messaging workflows.
+## 用法
 
-# Supports
+- `sauce` + 图片（同一条消息带图）：反搜该图片
+- 回复一张图片并输入 `sauce`：反搜被回复的图片
 
-- [AstrBot Repo](https://github.com/AstrBotDevs/AstrBot)
-- [AstrBot Plugin Development Docs (Chinese)](https://docs.astrbot.app/dev/star/plugin-new.html)
-- [AstrBot Plugin Development Docs (English)](https://docs.astrbot.app/en/dev/star/plugin-new.html)
+## 安装
+
+将本仓库克隆到 AstrBot 的 `data/plugins/` 目录下，或通过 AstrBot 插件市场安装。
+
+依赖：见 `requirements.txt`（需要 `httpx`）。
+
+## 说明
+
+- 仅使用 Yandex 公开网页结果，不做任何账号建库、人脸库或跨平台身份聚合。
+- 结果来源于公开网页，由 Yandex 相似图索引返回，命中与否取决于图片是否曾被公开发布。
+- Yandex 无官方 API，网页结构变更可能导致解析失效；遇到问题时请提 issue。
