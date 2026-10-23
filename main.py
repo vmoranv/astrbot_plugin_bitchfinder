@@ -1,24 +1,85 @@
-from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
-from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
+from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.message_components import Image, Reply
+from astrbot.api.star import Context, Star
 
-@register("helloworld", "YourName", "一个简单的 Hello World 插件", "1.0.0")
-class MyPlugin(Star):
+from .sauce import format_entries, search_by_image
+
+
+class SauceFinderPlugin(Star):
+    """反向图片搜索：查找图片出处（原图/画师/Coser 署名）。
+
+    用法：
+    - 同一条消息：sauce + 图片
+    - 回复一张包含图片的消息，输入 sauce
+    """
+
     def __init__(self, context: Context):
         super().__init__(context)
+        self.cfg = {
+            "max_results": 8,
+            "timeout": 20,
+            "proxy": "",
+        }
 
     async def initialize(self):
-        """可选择实现异步的插件初始化方法，当实例化该插件类之后会自动调用该方法。"""
+        cfg = getattr(self.context, "config", None)
+        if cfg:
+            for key in self.cfg:
+                try:
+                    self.cfg[key] = cfg.get(key, self.cfg[key])
+                except Exception:
+                    pass
+        logger.info(f"[saucefinder] 配置: {self.cfg}")
 
-    # 注册指令的装饰器。指令名为 helloworld。注册成功后，发送 `/helloworld` 就会触发这个指令，并回复 `你好, {user_name}!`
-    @filter.command("helloworld")
-    async def helloworld(self, event: AstrMessageEvent):
-        """这是一个 hello world 指令""" # 这是 handler 的描述，将会被解析方便用户了解插件内容。建议填写。
-        user_name = event.get_sender_name()
-        message_str = event.message_str # 用户发的纯文本消息字符串
-        message_chain = event.get_messages() # 用户所发的消息的消息链 # from astrbot.api.message_components import *
-        logger.info(message_chain)
-        yield event.plain_result(f"Hello, {user_name}, 你发了 {message_str}!") # 发送一条纯文本消息
+    @filter.command("sauce")
+    async def sauce(self, event: AstrMessageEvent):
+        """反搜图片出处（需同时发送图片，或回复一张图片）"""
+        image_bytes = await self._extract_image(event)
+        if image_bytes is None:
+            yield event.plain_result(
+                "请在同一条消息中附带图片，或回复一条包含图片的消息后使用 sauce。"
+            )
+            return
+
+        yield event.plain_result("正在反搜，请稍候……")
+        try:
+            page_url, entries = await search_by_image(
+                image_bytes,
+                timeout=self.cfg["timeout"],
+                proxy=self.cfg["proxy"],
+            )
+        except Exception as e:
+            logger.warning(f"[saucefinder] 搜索失败: {e}")
+            yield event.plain_result(f"搜索失败：{e}")
+            return
+
+        text = format_entries(entries, limit=self.cfg["max_results"])
+        yield event.plain_result(f"{text}\n\n完整结果页：{page_url}")
+
+    async def _extract_image(self, event: AstrMessageEvent) -> bytes | None:
+        """从当前消息或被回复消息中提取第一张图片的字节。
+
+        统一走 Image.convert_to_file_path()：无论图片是 URL、本地路径
+        还是 base64，SDK 都会下载/解析为本地文件路径。
+        """
+        chain = event.get_messages() or []
+        img = next((c for c in chain if isinstance(c, Image)), None)
+        if img is None:
+            # 回复消息场景：图片在被引用消息的 chain 里
+            reply = next((c for c in chain if isinstance(c, Reply)), None)
+            if reply:
+                rchain = getattr(reply, "chain", None) or []
+                img = next((c for c in rchain if isinstance(c, Image)), None)
+        if img is None:
+            return None
+        try:
+            local_path = await img.convert_to_file_path()
+            with open(local_path, "rb") as f:
+                return f.read()
+        except Exception as e:
+            logger.warning(f"[saucefinder] 图片提取失败: {e}")
+            return None
 
     async def terminate(self):
-        """可选择实现异步的插件销毁方法，当插件被卸载/停用时会调用。"""
+        pass
