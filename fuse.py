@@ -344,6 +344,10 @@ def format_verdicts(verdicts: list[AuthorVerdict], limit: int = 5) -> str:
             "提示：配置 SauceNAO api_key 可显著提升原帖命中率。"
         )
 
+    # "未知"平台是聚合站跨站人名通道注册的（无平台归属），显示为"身份"
+    for v in verdicts:
+        if v.platform == "未知":
+            v.platform = "身份(站内人名)"
     strong = [v for v in verdicts if v.confidence >= _STRONG_CONFIDENCE]
     weak = [v for v in verdicts if v.confidence < _STRONG_CONFIDENCE]
 
@@ -369,4 +373,9 @@ def format_verdicts(verdicts: list[AuthorVerdict], limit: int = 5) -> str:
         lines.append(f"（另有 {len(weak)} 个仅弱证据账号，多为转发者，已折叠）")
     if not strong:
         lines.append("提示：配置 SauceNAO api_key 可显著提升原帖命中率。")
+    # 身份类候选（站内人名，无平台归属）附 X 搜索验证链接
+    for i, line in enumerate(lines):
+        if "[身份(站内人名)]" in line:
+            handle = line.split("@")[1].split(" ")[0]
+            lines.insert(i + 1, f"      X 搜索验证: https://x.com/search?q={handle}")
     return "\n".join(lines)
