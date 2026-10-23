@@ -34,6 +34,7 @@ class SauceEntry:
     domain: str
     page_url: str
     image_url: str
+    description: str = ""  # 结果条目的描述文本（推文正文摘要等）
     width: int = 0
     height: int = 0
 
@@ -53,6 +54,14 @@ _TITLE_HANDLE_RE = re.compile(r"@([A-Za-z0-9_]{1,20})")
 # URL 中的 X handle
 _X_URL_RE = re.compile(
     r"(?:x\.com|twitter\.com|sotwe\.com|urlebird\.com)/(?:user/)?@?([A-Za-z0-9_]{2,20})(?:[/?]|$)"
+)
+# 推文正文（description）中的原作者署名，实测常见形式：
+#   "Sunna sc: mamamia1008" / "sc: @yyy" / "📷: @yyy" / "mamamia1008's tweet video"
+# 以及直接提及的 @handle
+_DESC_CREDIT_RE = re.compile(
+    r"(?:sc|credit|cr|source|via|cn|photo|drawn\s+by|tw)\s*[:：]\s*@?([A-Za-z0-9_]{2,20})"
+    r"|@([A-Za-z0-9_]{2,20})'(?:s|’s)\s+(?:tweet|post)"
+    r"|@([A-Za-z0-9_]{2,20})"
 )
 
 # 平台展示名（按域名归类，用于输出）
@@ -85,6 +94,7 @@ class AuthorHandle:
     similarity: float = 0.0  # 候选原图与查询图的感知哈希相似度（0-1）
     match_url: str = ""  # 相似度对应的候选原图所在页面
     ranked: bool = False  # 是否已完成图片比对排序
+    credit_weight: int = 0  # description 署名权重（>0 表示被正文署名引用过）
 
 
 def _platform_of(domain: str) -> str:
@@ -95,44 +105,66 @@ def _platform_of(domain: str) -> str:
     return ""
 
 
-def extract_authors(entries: list[SauceEntry]) -> list[AuthorHandle]:
-    """从出处条目的标题/URL 中提取作者 handle，按出现次数排序去重。
+def _clean_handle(h: str | None) -> str | None:
+    """过滤明显的非账号词，返回规范化 handle 或 None。"""
+    if not h:
+        return None
+    if h.lower() in {"status", "search", "user", "home", "intent", "sunna", "sc"}:
+        return None
+    return h
 
-    只保留 X 镜像站与已知社媒域名携带的署名；普通站点标题里的
-    @xxx（如邮件地址、正文提及）不算作者。
+
+def extract_authors(entries: list[SauceEntry]) -> list[AuthorHandle]:
+    """从出处条目中提取作者 handle，带来源权重。
+
+    实测教训（mamamia1008 案例）：镜像站标题里的 @handle 往往是
+    **转发者/补档号**，真正的原作者署名在推文正文（description）里，
+    典型形式："Sunna sc: mamamia1008"、"xxx's tweet video"、
+    "📷: @yyy"。因此 description 提权（权重 3），标题/URL 的
+    handle 降权（权重 1）。
     """
-    counts: dict[tuple[str, str], AuthorHandle] = {}
-    order: dict[tuple[str, str], int] = {}
+    weights: dict[tuple[str, str], int] = {}
+    samples: dict[tuple[str, str], AuthorHandle] = {}
     for e in entries:
         platform = _platform_of(e.domain)
         if not platform:
             continue
-        # 1) 标题中的 @handle（镜像站标题固定带作者 handle）
-        handle = ""
+        # 1) description 中的署名（原作者，最高优先）
+        #    形式："sc: handle"、"credit: @handle"、"handle's tweet"、"@handle"
+        for m in _DESC_CREDIT_RE.finditer(e.description or ""):
+            h = _clean_handle(m.group(1))
+            if h:
+                key = (h.lower(), platform)
+                weights[key] = weights.get(key, 0) + 3
+                if key not in samples:
+                    samples[key] = AuthorHandle(
+                        handle=h,
+                        platform=platform,
+                        source_domain=e.domain,
+                        page_url=e.page_url,
+                        credit_weight=weights[key],
+                    )
+                else:
+                    samples[key].credit_weight = weights[key]
+        # 2) 标题 @handle / URL handle（可能是转发者，低权重）
         m = _TITLE_HANDLE_RE.search(e.title)
-        if m:
-            handle = m.group(1)
-        # 2) 标题没有时，尝试页面 URL 路径中的 handle
-        if not handle:
+        if not m:
             m = _X_URL_RE.search(e.page_url)
-            if m:
-                handle = m.group(1)
-        if not handle:
-            continue
-        # 过滤明显的非账号词
-        if handle.lower() in {"status", "search", "user", "home", "intent"}:
-            continue
-        key = (handle.lower(), platform)
-        if key not in counts:
-            counts[key] = AuthorHandle(
-                handle=handle,
-                platform=platform,
-                source_domain=e.domain,
-                page_url=e.page_url,
-            )
-            order[key] = 0
-        order[key] += 1
-    ranked = sorted(counts.items(), key=lambda kv: (-order[kv[0]], order[kv[0]]))
+        if m:
+            h = _clean_handle(m.group(1))
+            if h:
+                key = (h.lower(), platform)
+                weights[key] = weights.get(key, 0) + 1
+                samples.setdefault(
+                    key,
+                    AuthorHandle(
+                        handle=h,
+                        platform=platform,
+                        source_domain=e.domain,
+                        page_url=e.page_url,
+                    ),
+                )
+    ranked = sorted(samples.items(), key=lambda kv: -weights[kv[0]])
     return [v for _, v in ranked]
 
 
@@ -203,15 +235,18 @@ async def rank_authors_by_image(
         platform = _platform_of(e.domain)
         if not platform or not e.image_url:
             continue
+        handles: list[str] = []
+        for m in _DESC_CREDIT_RE.finditer(e.description or ""):
+            h = _clean_handle(m.group(1) or m.group(2) or m.group(3) or "")
+            if h:
+                handles.append(h)
         m = _TITLE_HANDLE_RE.search(e.title) or _X_URL_RE.search(e.page_url)
-        if m and m.group(1).lower() not in {
-            "status",
-            "search",
-            "user",
-            "home",
-            "intent",
-        }:
-            by_handle.setdefault((m.group(1).lower(), platform), []).append(e)
+        if m:
+            h = _clean_handle(m.group(1))
+            if h:
+                handles.append(h)
+        for h in set(handles):
+            by_handle.setdefault((h.lower(), platform), []).append(e)
 
     query_hash = _perceptual_hashes(query_bytes)
     if query_hash is None:
@@ -248,8 +283,14 @@ async def rank_authors_by_image(
             author.similarity = best.get(key, 0.0)
             author.match_url = best_url.get(key, "")
 
-    # 相似度优先
-    authors.sort(key=lambda a: -a.similarity)
+    # 排序：正文署名（原作者）优先；相似度只对 >=75% 的硬确认起作用，
+    # 更低的分数（同系列/同风格误报）不参与排序——mamamia 案例教训
+    authors.sort(
+        key=lambda a: (
+            -a.credit_weight,
+            -a.similarity if a.similarity >= 0.75 else 0.0,
+        )
+    )
     for a in authors:
         a.ranked = True
     return authors
@@ -264,11 +305,12 @@ def format_authors(authors: list[AuthorHandle]) -> str:
     """
     if not authors:
         return ""
-    lines = ["可能的作者账号（按图片相似度排序）："]
+    lines = ["可能的作者账号（正文署名优先，相似度仅在同图时作数）："]
     for a in authors[:5]:
-        sim = f" 图像相似度 {a.similarity:.0%}" if a.similarity else " (未比对到候选图)"
+        sim = f" 图像相似度 {a.similarity:.0%}" if a.similarity else ""
+        credit = " [正文署名]" if a.credit_weight else ""
         tag = "✅" if a.similarity >= 0.9 else ("🤔" if a.similarity >= 0.75 else "  ")
-        lines.append(f"{tag} @{a.handle}  [{a.platform}]{sim}")
+        lines.append(f"{tag} @{a.handle}  [{a.platform}]{credit}{sim}")
         lines.append(f"      页面: {a.match_url or a.page_url}")
         lines.append(f"      检索: {site_search_links(a)}")
     return "\n".join(lines)
@@ -401,6 +443,7 @@ def _parse_cbir_sites(html: str) -> list[SauceEntry]:
                 domain=item.get("domain", ""),
                 page_url=page_url,
                 image_url=orig.get("url", "") or thumb.get("url", ""),
+                description=item.get("description", ""),
                 width=orig.get("width", 0),
                 height=orig.get("height", 0),
             )
