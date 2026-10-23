@@ -3,7 +3,12 @@ from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.message_components import Image, Reply
 from astrbot.api.star import Context, Star
 
-from .sauce import format_entries, search_by_image
+from .sauce import (
+    format_authors,
+    format_entries,
+    rank_authors_by_image,
+    search_by_image,
+)
 
 
 class SauceFinderPlugin(Star):
@@ -55,6 +60,18 @@ class SauceFinderPlugin(Star):
             return
 
         text = format_entries(entries, limit=self.cfg["max_results"])
+        try:
+            # 用候选原图与查询图做感知哈希比对，账号按图片相似度排序
+            authors = await rank_authors_by_image(
+                entries,
+                image_bytes,
+                timeout=self.cfg["timeout"],
+                proxy=self.cfg["proxy"],
+            )
+            if authors:
+                text = format_authors(authors) + "\n\n" + text
+        except Exception as e:
+            logger.warning(f"[saucefinder] 账号比对失败（退化为未排序输出）: {e}")
         yield event.plain_result(f"{text}\n\n完整结果页：{page_url}")
 
     async def _extract_image(self, event: AstrMessageEvent) -> bytes | None:

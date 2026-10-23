@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from urllib.parse import quote
 
 import aiohttp
+from PIL import Image
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -81,6 +82,9 @@ class AuthorHandle:
     platform: str  # 平台名
     source_domain: str  # 从哪个结果域名提取的
     page_url: str  # 对应的出处页面
+    similarity: float = 0.0  # 候选原图与查询图的感知哈希相似度（0-1）
+    match_url: str = ""  # 相似度对应的候选原图所在页面
+    ranked: bool = False  # 是否已完成图片比对排序
 
 
 def _platform_of(domain: str) -> str:
@@ -132,18 +136,140 @@ def extract_authors(entries: list[SauceEntry]) -> list[AuthorHandle]:
     return [v for _, v in ranked]
 
 
-def format_authors(authors: list[AuthorHandle]) -> str:
-    """格式化作者段落，附 site 限定检索链接。
+# ---------------------------------------------------------------------------
+# 图片比对：感知哈希（aHash + dHash）。Pillow 为 AstrBot 自带依赖。
+# ---------------------------------------------------------------------------
 
-    site 检索的种子是作者 handle 与出处域名，不是结果页里的
-    "similar images" 缩略图——实测那 3 张图只是同一上传图的
-    /ocr /orig /preview 变体，再搜返回同一批条目，无新信息。
+_LANCZOS = Image.Resampling.LANCZOS
+
+
+def _perceptual_hashes(data: bytes) -> tuple[int, int] | None:
+    """返回 (aHash64, dHash64)，失败返回 None。"""
+    import io
+
+    try:
+        img = Image.open(io.BytesIO(data)).convert("L")
+    except Exception:
+        return None
+    # aHash: 8x8 均值哈希
+    small = img.resize((8, 8), _LANCZOS)
+    px: list[int] = list(small.tobytes())
+    avg = sum(px) / 64
+    ahash = 0
+    for bit, v in enumerate(px):
+        if v > avg:
+            ahash |= 1 << bit
+    # dHash: 9x8 相邻差分哈希
+    small2 = img.resize((9, 8), _LANCZOS)
+    px2: list[int] = list(small2.tobytes())
+    dhash = 0
+    bit = 0
+    for row in range(8):
+        for col in range(8):
+            if px2[row * 9 + col] > px2[row * 9 + col + 1]:
+                dhash |= 1 << bit
+            bit += 1
+    return ahash, dhash
+
+
+def _hash_similarity(h1: tuple[int, int], h2: tuple[int, int]) -> float:
+    """两组哈希的归一化汉明相似度（0-1）。"""
+
+    def _sim(a: int, b: int) -> float:
+        return 1.0 - bin(a ^ b).count("1") / 64.0
+
+    return (_sim(h1[0], h2[0]) + _sim(h1[1], h2[1])) / 2
+
+
+async def rank_authors_by_image(
+    entries: list[SauceEntry],
+    query_bytes: bytes,
+    *,
+    timeout: int = 10,
+    proxy: str = "",
+    max_candidates: int = 12,
+) -> list[AuthorHandle]:
+    """提取作者并用条目原图做感知哈希比对，按图片相似度排序。
+
+    对每个带署名的条目：下载其 originalImage（多数为 pbs.twimg.com 等
+    公开 CDN，无需绕过反爬），与查询图算相似度；同一账号取最高分。
+    """
+    authors = extract_authors(entries)
+    if not authors:
+        return []
+    # handle -> 该 handle 关联条目的原图候选
+    by_handle: dict[tuple[str, str], list[SauceEntry]] = {}
+    for e in entries:
+        platform = _platform_of(e.domain)
+        if not platform or not e.image_url:
+            continue
+        m = _TITLE_HANDLE_RE.search(e.title) or _X_URL_RE.search(e.page_url)
+        if m and m.group(1).lower() not in {
+            "status",
+            "search",
+            "user",
+            "home",
+            "intent",
+        }:
+            by_handle.setdefault((m.group(1).lower(), platform), []).append(e)
+
+    query_hash = _perceptual_hashes(query_bytes)
+    if query_hash is None:
+        # 查询图不可解码，退化为纯出现次数排序
+        return authors
+
+    connector = aiohttp.TCPConnector(ssl=False)
+    async with aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(total=timeout),
+        headers={"User-Agent": _UA},
+        connector=connector,
+        trust_env=False,
+    ) as session:
+        best: dict[tuple[str, str], float] = {}
+        best_url: dict[tuple[str, str], str] = {}
+        for author in authors[:max_candidates]:
+            key = (author.handle.lower(), author.platform)
+            for e in by_handle.get(key, [])[:3]:  # 每账号最多比对 3 张候选图
+                try:
+                    async with session.get(e.image_url, proxy=proxy or None) as resp:
+                        if resp.status != 200:
+                            continue
+                        cand = _perceptual_hashes(await resp.read())
+                except Exception:
+                    continue
+                if cand is None:
+                    continue
+                sim = _hash_similarity(query_hash, cand)
+                if sim > best.get(key, 0.0):
+                    best[key] = sim
+                    best_url[key] = e.page_url
+        for author in authors:
+            key = (author.handle.lower(), author.platform)
+            author.similarity = best.get(key, 0.0)
+            author.match_url = best_url.get(key, "")
+
+    # 相似度优先
+    authors.sort(key=lambda a: -a.similarity)
+    for a in authors:
+        a.ranked = True
+    return authors
+
+
+def format_authors(authors: list[AuthorHandle]) -> str:
+    """格式化作者段落：图片相似度评分 + 检索链接。
+
+    相似度来自候选原图（Yandex 条目的 originalImage）与查询图的
+    感知哈希比对；≥0.9 视为同图，0.75-0.9 为可疑，低于 0.75 通常
+    只是相关图。检索链接仅供人工点开确认，未做自动化验证。
     """
     if not authors:
         return ""
-    lines = ["可能的作者账号（按命中次数排序，附验证检索链接）："]
+    lines = ["可能的作者账号（按图片相似度排序）："]
     for a in authors[:5]:
-        lines.append(f"  @{a.handle}  [{a.platform}]  (via {a.source_domain})")
+        sim = f" 图像相似度 {a.similarity:.0%}" if a.similarity else " (未比对到候选图)"
+        tag = "✅" if a.similarity >= 0.9 else ("🤔" if a.similarity >= 0.75 else "  ")
+        lines.append(f"{tag} @{a.handle}  [{a.platform}]{sim}")
+        lines.append(f"      页面: {a.match_url or a.page_url}")
         lines.append(f"      检索: {site_search_links(a)}")
     return "\n".join(lines)
 
@@ -283,12 +409,16 @@ def _parse_cbir_sites(html: str) -> list[SauceEntry]:
 
 
 def format_entries(entries: list[SauceEntry], limit: int = 8) -> str:
-    """格式化结果为纯文本输出（含作者账号段落）。"""
+    """格式化结果为纯文本输出（含作者账号段落）。
+
+    注意：作者排序需要图片比对（rank_authors_by_image），若已调用
+    过则 authors 已带相似度；否则退化为出现次数排序。
+    """
     if not entries:
         return "未找到相似图结果（图片可能未被公开索引过）。"
-    authors = extract_authors(entries)
+    authors = [a for a in extract_authors(entries) if a.ranked]
     lines = []
-    author_block = format_authors(authors)
+    author_block = format_authors(authors) if authors else ""
     if author_block:
         lines.append(author_block)
     lines.append(f"共 {len(entries)} 条出处（显示前 {min(limit, len(entries))} 条）：")
