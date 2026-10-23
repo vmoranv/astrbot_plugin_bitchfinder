@@ -170,17 +170,46 @@ def _platform_of(c: PostCandidate) -> str:
     return ""
 
 
+# 强证据阈值：有正文署名/官方引擎命中/同图确认之一才作为"作者候选"展示
+_STRONG_CONFIDENCE = 0.30
+
+
 def format_verdicts(verdicts: list[AuthorVerdict], limit: int = 5) -> str:
-    """格式化融合结果。"""
+    """格式化融合结果。
+
+    实测教训：镜像页标题 handle 大多是转发者。仅靠弱证据（+0.10
+    累加）的作者不允许以"作者候选"名义出现，折叠进明确标注低可信
+    的列表，避免误导。无任何强证据时明确说明。
+    """
     if not verdicts:
-        return "未能确定作者候选（各引擎均无署名证据）。"
-    lines = [f"作者候选（融合 {len(verdicts)} 位，按置信度排序）："]
-    for v in verdicts[:limit]:
-        lines.append(f"  @{v.handle}  [{v.platform}]  置信度 {v.confidence:.2f}")
-        if v.post_url:
-            lines.append(f"      原帖: {v.post_url}")
-        elif v.page_url:
-            lines.append(f"      证据页: {v.page_url}")
-        for ev in v.evidence[:3]:
-            lines.append(f"      · {ev}")
+        return (
+            "未能确定作者候选（各引擎均无署名证据）。\n"
+            "提示：配置 SauceNAO api_key 可显著提升原帖命中率。"
+        )
+
+    strong = [v for v in verdicts if v.confidence >= _STRONG_CONFIDENCE]
+    weak = [v for v in verdicts if v.confidence < _STRONG_CONFIDENCE]
+
+    lines = []
+    if strong:
+        lines.append(f"作者候选（{len(strong)} 位，按置信度排序）：")
+        for v in strong[:limit]:
+            lines.append(f"  @{v.handle}  [{v.platform}]  置信度 {v.confidence:.2f}")
+            if v.post_url:
+                lines.append(f"      原帖: {v.post_url}")
+            elif v.page_url:
+                lines.append(f"      证据页: {v.page_url}")
+            for ev in v.evidence[:3]:
+                lines.append(f"      · {ev}")
+    else:
+        lines.append(
+            "未找到可靠署名证据（无正文 credit、无官方引擎命中、无同图确认）。"
+        )
+        lines.append("以下仅为结果页中出现过的账号，多为转发者，低可信：")
+        for v in weak[:limit]:
+            lines.append(f"  ? @{v.handle}  [{v.platform}]  置信度 {v.confidence:.2f}")
+    if strong and weak:
+        lines.append(f"（另有 {len(weak)} 个仅弱证据账号，多为转发者，已折叠）")
+    if not strong:
+        lines.append("提示：配置 SauceNAO api_key 可显著提升原帖命中率。")
     return "\n".join(lines)
