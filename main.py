@@ -53,9 +53,9 @@ class SauceFinderPlugin(Star):
         ]
         logger.info(f"[saucefinder] 引擎: {enabled}, 配置: {self.cfg}")
 
-    @filter.command("sauce")
+    @filter.command("sauce", alias={"kfc"})
     async def sauce(self, event: AstrMessageEvent):
-        """反搜图片出处（需同时发送图片，或回复一张图片）"""
+        """反搜图片出处（需同时发送图片，或回复一张图片）。别名为 kfc。"""
         image_bytes = await self._extract_image(event)
         if image_bytes is None:
             yield event.plain_result(
