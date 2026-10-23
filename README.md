@@ -1,17 +1,26 @@
-# astrbot_plugin_saucefinder
+# astrbot_plugin_bitchfinder
 
-AstrBot 反向图片搜索插件：发送图片，自动通过 Yandex Images 反向搜索，返回图片出处（原图链接、画师/Coser 主页署名）。
+AstrBot 反向图片搜索插件：发送图片，自动通过多引擎反向搜索，返回图片出处与作者账号（含 X 原帖、Coser 主页署名）。
 
 ## 用法
 
-- `sauce` + 图片（同一条消息带图）：反搜该图片
-- 回复一张图片并输入 `sauce`：反搜被回复的图片
+`找鸡` + 图片/引用图片
 
-## 安装
+别名：`kfc`
 
-将本仓库克隆到 AstrBot 的 `data/plugins/` 目录下，或通过 AstrBot 插件市场安装。
+## 示例
 
-依赖：见 `requirements.txt`（需要 `httpx`）。
+发送一张 Coser 图片（如 `sample.png`）并输入 `找鸡`，插件会返回该图的可能出处与作者账号，例如：
+
+```
+可能的作者账号（正文署名优先，相似度仅在同图时作数）：
+✅ @mamamia1008  [X/Twitter] [正文署名] 图像相似度 98%
+      页面: https://x.com/mamamia1008/status/...
+      检索: https://x.com/search?q=from%3Amamamia1008
+```
+
+![示例](sample.png)
+
 
 ## 说明
 

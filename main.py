@@ -18,8 +18,8 @@ class SauceFinderPlugin(Star):
     """反向图片搜索：多引擎查找图片出处与作者（含 X 原帖）。
 
     用法：
-    - 同一条消息：sauce + 图片
-    - 回复一张包含图片的消息，输入 sauce
+    - 同一条消息：找鸡 + 图片
+    - 回复一张包含图片的消息，输入 找鸡
 
     引擎：Yandex(.com/.ru 双域名)、SauceNAO(需 api_key)、
     ascii2d(需 cf_clearance)、Google Vision WEB_DETECTION(需 GCP key)。
@@ -53,13 +53,13 @@ class SauceFinderPlugin(Star):
         ]
         logger.info(f"[saucefinder] 引擎: {enabled}, 配置: {self.cfg}")
 
-    @filter.command("sauce", alias={"kfc"})
-    async def sauce(self, event: AstrMessageEvent):
+    @filter.command("找鸡", alias={"kfc"})
+    async def find_sauce(self, event: AstrMessageEvent):
         """反搜图片出处（需同时发送图片，或回复一张图片）。别名为 kfc。"""
         image_bytes = await self._extract_image(event)
         if image_bytes is None:
             yield event.plain_result(
-                "请在同一条消息中附带图片，或回复一条包含图片的消息后使用 sauce。"
+                "请在同一条消息中附带图片，或回复一条包含图片的消息后使用 找鸡。"
             )
             return
 
