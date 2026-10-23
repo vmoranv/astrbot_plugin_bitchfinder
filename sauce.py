@@ -133,13 +133,38 @@ def extract_authors(entries: list[SauceEntry]) -> list[AuthorHandle]:
 
 
 def format_authors(authors: list[AuthorHandle]) -> str:
-    """格式化作者段落。"""
+    """格式化作者段落，附 site 限定检索链接。
+
+    site 检索的种子是作者 handle 与出处域名，不是结果页里的
+    "similar images" 缩略图——实测那 3 张图只是同一上传图的
+    /ocr /orig /preview 变体，再搜返回同一批条目，无新信息。
+    """
     if not authors:
         return ""
-    lines = ["可能的作者账号（按命中次数排序）："]
+    lines = ["可能的作者账号（按命中次数排序，附验证检索链接）："]
     for a in authors[:5]:
         lines.append(f"  @{a.handle}  [{a.platform}]  (via {a.source_domain})")
+        lines.append(f"      检索: {site_search_links(a)}")
     return "\n".join(lines)
+
+
+def site_search_links(author: AuthorHandle) -> str:
+    """为作者 handle 生成平台内检索链接，用于确认其主页/原帖。"""
+    h = author.handle
+    plat = author.platform
+    if plat == "X/Twitter":
+        # from: 操作符直接搜该账号的发帖；附 nitter 镜像兜底
+        return f"https://x.com/search?q=from%3A{h}"
+    if plat == "微博":
+        return f"https://s.weibo.com/user/?q={quote(h)}"
+    if plat == "小红书":
+        return f"https://www.xiaohongshu.com/search_result?keyword={quote(h)}"
+    if plat == "Instagram":
+        return f"https://www.instagram.com/{h}/"
+    if plat == "Pixiv":
+        return f"https://www.pixiv.net/search.php?s_mode=s_usr&word={quote(h)}"
+    # 兜底：通用引擎 site 限定
+    return f"https://www.google.com/search?q=site:{author.source_domain}+{quote(h)}"
 
 
 async def search_by_image(
