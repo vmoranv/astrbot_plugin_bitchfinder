@@ -176,8 +176,7 @@ def format_verdicts(verdicts: list[AuthorVerdict], limit: int = 5) -> str:
         return "未能确定作者候选（各引擎均无署名证据）。"
     lines = [f"作者候选（融合 {len(verdicts)} 位，按置信度排序）："]
     for v in verdicts[:limit]:
-        pct = f"{v.confidence:.0%}"
-        lines.append(f"  @{v.handle}  [{v.platform}]  置信度 {pct}")
+        lines.append(f"  @{v.handle}  [{v.platform}]  置信度 {v.confidence:.2f}")
         if v.post_url:
             lines.append(f"      原帖: {v.post_url}")
         elif v.page_url:

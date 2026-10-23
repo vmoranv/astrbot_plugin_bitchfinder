@@ -163,10 +163,14 @@ class SauceFinderPlugin(Star):
             return unquote(m.group(1))
         return ""
 
-    async def _phash_verify_yandex(
+    async def _phash_verify_all(
         self, candidates: list[PostCandidate], query: bytes, proxy: str, timeout: int
     ) -> dict[str, float]:
-        """对 Yandex 候选按署名分组下载原图，计算与查询图的相似度。"""
+        """对所有带原图 URL 的候选按署名分组下载，计算与查询图的相似度。
+
+        覆盖全部引擎（Yandex/SauceNAO/ascii2d/gcv），同图硬确认的
+        +20% 置信度加成不再漏掉非 Yandex 引擎命中的作者。
+        """
         scores: dict[str, float] = {}
         qh = _perceptual_hashes(query)
         if qh is None:
@@ -174,12 +178,14 @@ class SauceFinderPlugin(Star):
         # 只对有 handle 的条目做
         per_handle: dict[str, list[str]] = {}
         for c in candidates:
-            if c.engine != "yandex" or not c.image_url:
+            if not c.image_url:
                 continue
             # 用 fuse 中相同的署名提取（简化：title + desc）
             from .fuse import _DESC_CREDIT_RE, _TITLE_HANDLE_RE, _X_URL_RE, _clean
 
             handles = set()
+            if c.author_handle:
+                handles.add(c.author_handle.lower())
             for m in _DESC_CREDIT_RE.finditer(c.description or ""):
                 h = _clean(m.group(1) or m.group(2) or m.group(3))
                 if h:
