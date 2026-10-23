@@ -37,6 +37,111 @@ class SauceEntry:
     height: int = 0
 
 
+# ---------------------------------------------------------------------------
+# 社媒账号提取
+#
+# 原理：Yandex 结果的标题/URL 经常直接携带作品作者的署名，典型模式：
+#   - "Coser 名 @xxx - Twitter Profile Sotwe"（sotwe.com 等 X 镜像站）
+#   - "xxx @yyy - Urlebird"
+#   - cosppi.net/user/<id>、x.com/<handle> 等页面 URL
+# 这里只做"出处条目里的作者署名解析"，不做跨条目身份聚合。
+# ---------------------------------------------------------------------------
+
+# 标题中的 @handle 模式（X 镜像站标题格式："昵称 @handle - ... "）
+_TITLE_HANDLE_RE = re.compile(r"@([A-Za-z0-9_]{1,20})")
+# URL 中的 X handle
+_X_URL_RE = re.compile(
+    r"(?:x\.com|twitter\.com|sotwe\.com|urlebird\.com)/(?:user/)?@?([A-Za-z0-9_]{2,20})(?:[/?]|$)"
+)
+
+# 平台展示名（按域名归类，用于输出）
+_DOMAIN_PLATFORM = [
+    ("x.com", "X/Twitter"),
+    ("twitter.com", "X/Twitter"),
+    ("sotwe.com", "X/Twitter"),
+    ("urlebird.com", "X/Twitter"),
+    ("weibo.com", "微博"),
+    ("weibo.cn", "微博"),
+    ("sinaimg.cn", "微博"),
+    ("xiaohongshu.com", "小红书"),
+    ("xhscdn.com", "小红书"),
+    ("instagram.com", "Instagram"),
+    ("pixiv.net", "Pixiv"),
+    ("danbooru.donmai.us", "Danbooru"),
+    ("coser.one", "Cosplay站"),
+    ("cosppi.net", "Cosplay站"),
+]
+
+
+@dataclass
+class AuthorHandle:
+    """从出处条目中解析出的作者署名。"""
+
+    handle: str  # @xxx 的 handle（不含 @）
+    platform: str  # 平台名
+    source_domain: str  # 从哪个结果域名提取的
+    page_url: str  # 对应的出处页面
+
+
+def _platform_of(domain: str) -> str:
+    d = domain.lower()
+    for prefix, name in _DOMAIN_PLATFORM:
+        if d == prefix or d.endswith("." + prefix):
+            return name
+    return ""
+
+
+def extract_authors(entries: list[SauceEntry]) -> list[AuthorHandle]:
+    """从出处条目的标题/URL 中提取作者 handle，按出现次数排序去重。
+
+    只保留 X 镜像站与已知社媒域名携带的署名；普通站点标题里的
+    @xxx（如邮件地址、正文提及）不算作者。
+    """
+    counts: dict[tuple[str, str], AuthorHandle] = {}
+    order: dict[tuple[str, str], int] = {}
+    for e in entries:
+        platform = _platform_of(e.domain)
+        if not platform:
+            continue
+        # 1) 标题中的 @handle（镜像站标题固定带作者 handle）
+        handle = ""
+        m = _TITLE_HANDLE_RE.search(e.title)
+        if m:
+            handle = m.group(1)
+        # 2) 标题没有时，尝试页面 URL 路径中的 handle
+        if not handle:
+            m = _X_URL_RE.search(e.page_url)
+            if m:
+                handle = m.group(1)
+        if not handle:
+            continue
+        # 过滤明显的非账号词
+        if handle.lower() in {"status", "search", "user", "home", "intent"}:
+            continue
+        key = (handle.lower(), platform)
+        if key not in counts:
+            counts[key] = AuthorHandle(
+                handle=handle,
+                platform=platform,
+                source_domain=e.domain,
+                page_url=e.page_url,
+            )
+            order[key] = 0
+        order[key] += 1
+    ranked = sorted(counts.items(), key=lambda kv: (-order[kv[0]], order[kv[0]]))
+    return [v for _, v in ranked]
+
+
+def format_authors(authors: list[AuthorHandle]) -> str:
+    """格式化作者段落。"""
+    if not authors:
+        return ""
+    lines = ["可能的作者账号（按命中次数排序）："]
+    for a in authors[:5]:
+        lines.append(f"  @{a.handle}  [{a.platform}]  (via {a.source_domain})")
+    return "\n".join(lines)
+
+
 async def search_by_image(
     image_bytes: bytes,
     *,
@@ -153,10 +258,15 @@ def _parse_cbir_sites(html: str) -> list[SauceEntry]:
 
 
 def format_entries(entries: list[SauceEntry], limit: int = 8) -> str:
-    """格式化结果为纯文本输出。"""
+    """格式化结果为纯文本输出（含作者账号段落）。"""
     if not entries:
         return "未找到相似图结果（图片可能未被公开索引过）。"
-    lines = [f"找到 {len(entries)} 条出处（显示前 {min(limit, len(entries))} 条）："]
+    authors = extract_authors(entries)
+    lines = []
+    author_block = format_authors(authors)
+    if author_block:
+        lines.append(author_block)
+    lines.append(f"共 {len(entries)} 条出处（显示前 {min(limit, len(entries))} 条）：")
     for idx, e in enumerate(entries[:limit], 1):
         title = e.title.strip() or "(无标题)"
         lines.append(f"{idx}. [{e.domain}] {title}\n    {e.page_url}")
