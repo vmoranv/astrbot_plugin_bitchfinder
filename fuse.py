@@ -22,16 +22,117 @@ _TITLE_HANDLE_RE = re.compile(r"@([A-Za-z0-9_]{1,20})")
 _X_URL_RE = re.compile(
     r"(?:x\.com|twitter\.com|sotwe\.com|urlebird\.com)/(?:user/)?@?([A-Za-z0-9_]{2,20})(?:[/?]|$)"
 )
-# 强署名：明确 credit 模式（"sc: handle" / "handle's tweet"）
+# 强署名：明确 credit 模式（"sc: handle" / "handle's tweet photo/video"）
+# 实测：sotwe 转发推文描述为 "pon9019's tweet photo."，必须是 photo/video/status 全集
 _DESC_CREDIT_RE = re.compile(
     r"(?:sc|credit|cr|source|via|cn|photo|drawn\s+by|tw)\s*[:：]\s*@?([A-Za-z0-9_]{2,20})"
-    r"|([A-Za-z0-9_]{2,20})'(?:s|’s)\s+(?:tweet|post)"
+    r"|([A-Za-z0-9_]{2,20})'(?:s|’s)\s+(?:tweet\s+)?(?:photo|video|status|post)"
 )
 # 弱证据：裸 @mention（可能是转发者自引用）
 _DESC_MENTION_RE = re.compile(r"@([A-Za-z0-9_]{2,20})")
 _STATUS_RE = re.compile(r"(?:x\.com|twitter\.com)/(\w{2,20})/status/(\d+)")
 
 _STOPWORDS = {"status", "search", "user", "home", "intent", "sunna", "sc", "i", "web"}
+
+# handle 形态：4-20 位字母数字下划线，至少含一个字母（排除纯数字 id/日期）
+_HANDLE_LIKE_RE = re.compile(r"[A-Za-z0-9_]{4,20}")
+_LETTER_RE = re.compile(r"[A-Za-z]")
+
+# 聚合站标题常见通用词，不是人名
+_TITLE_NOISE = {
+    "nude",
+    "leaks",
+    "leaked",
+    "onlyfans",
+    "patreon",
+    "photo",
+    "photos",
+    "video",
+    "videos",
+    "naked",
+    "sexy",
+    "cosplay",
+    "forum",
+    "wall",
+    "free",
+    "top",
+    "best",
+    "girl",
+    "girls",
+    "asian",
+    "japanese",
+    "leakedmodels",
+    "fappening",
+    "fapeza",
+    "fapello",
+    "nudostar",
+    "nudogram",
+    "fapodrop",
+    "tokyomotion",
+    "sotwe",
+    "urlebird",
+    "twitter",
+    "profile",
+    "голая",
+    "фото",
+    "сливы",
+    # 英文站结构性词（标题分页/站点名）
+    "page",
+    "pages",
+    "index",
+    "home",
+    "main",
+    "list",
+    "category",
+    "tag",
+    "search",
+    "archive",
+    "post",
+    "posts",
+    "comments",
+    "login",
+    "update",
+    # 站名/品牌（会跨站出现在标题里）
+    "aliexpress",
+    "imall",
+    "telegra",
+    "telegram",
+    "telegraph",
+    "vikacg",
+    "alibaba",
+    "amazon",
+    "ebay",
+    "reddit",
+    "google",
+    "yandex",
+    "bing",
+    "kitty",
+    "welfare",
+    "silver",
+    "misty",
+    "models",
+    "model",
+}
+
+
+def _is_handle_like(tok: str) -> bool:
+    """判断标题 token 是否像账号名：形态匹配、含字母、非通用词。"""
+    if not _HANDLE_LIKE_RE.fullmatch(tok):
+        return False
+    if not _LETTER_RE.search(tok):
+        return False
+    if tok.lower() in _TITLE_NOISE:
+        return False
+    return True
+
+
+def _domain_root(url: str) -> str:
+    """域名根（剥离语言前缀 ru./de. 等），用于跨站一致计分。"""
+    host = url.split("/")[2] if "://" in url else ""
+    parts = host.split(".")
+    if len(parts) > 2 and len(parts[0]) <= 3:
+        parts = parts[1:]
+    return ".".join(parts)
 
 
 def _clean(h: str | None) -> str:
@@ -50,6 +151,7 @@ class AuthorVerdict:
     post_url: str = ""  # 最佳已知原帖（具体 status URL 优先）
     page_url: str = ""  # 证据页面
     evidence: list[str] = field(default_factory=list)  # 人类可读证据链
+    domains: set[str] = field(default_factory=set)  # 引用该 handle 的独立域名
 
 
 def fuse(
@@ -94,8 +196,7 @@ def fuse(
                 a.post_url = status_m.group(0)
         elif c.engine == "yandex":
             platform = _platform_of(c)
-            if not platform:
-                continue
+            domain_root = _domain_root(c.page_url)
             title_m = _TITLE_HANDLE_RE.search(c.title) or _X_URL_RE.search(c.page_url)
             title_h = _clean(title_m.group(1)) if title_m else ""
             # 1) description 强署名（credit 模式，原作者）
@@ -104,6 +205,7 @@ def fuse(
                 if h:
                     a = _author(h, platform)
                     a.confidence = min(1.0, a.confidence + 0.35)
+                    a.domains.add(domain_root)
                     a.evidence.append(
                         f"转发正文署名: “…{c.description[max(0, m.start() - 15) : m.end() + 10]}…”"
                     )
@@ -116,14 +218,62 @@ def fuse(
                 if h and h.lower() != title_h.lower():
                     a = _author(h, platform)
                     a.confidence = min(1.0, a.confidence + 0.10)
+                    a.domains.add(domain_root)
                     a.evidence.append(f"正文提及: @​{h}")
                     a.page_url = a.page_url or c.page_url
-            # 3) 标题/URL handle（转发者）
+            # 3) 标题/URL handle（转发者）—— 但跨域名一致性提权
             if title_h:
                 a = _author(title_h, platform)
-                a.confidence = min(1.0, a.confidence + 0.10)
-                a.evidence.append(f"镜像页署名(可能为转发者): {c.page_url[:60]}")
+                if domain_root not in a.domains:
+                    # 同一域名重复出现只 +0.05（同站多页信息量低）；
+                    # 新域名出现该 handle +0.15（跨站一致指向同一身份）
+                    a.confidence = min(
+                        1.0, a.confidence + (0.15 if a.domains else 0.10)
+                    )
+                    a.domains.add(domain_root)
+                else:
+                    a.confidence = min(1.0, a.confidence + 0.05)
+                a.evidence.append(f"站点署名({domain_root}): {c.page_url[:55]}")
                 a.page_url = a.page_url or c.page_url
+            # 4) 聚合站标题开头的 handle 形态词（"pon9019 Nude Leaks..."）
+            #    非社媒域名也会以人名为页面标题，是跨域一致性的重要来源
+            if not platform:
+                for raw_tok in (c.title or "").split():
+                    # "pon9019-nude/7159524" 类 slug 只取第一段
+                    tok = raw_tok.strip(",.;:!?()[]").split("-")[0]
+                    if not _is_handle_like(tok):
+                        continue
+                    a = _author(tok, "未知")
+                    if domain_root not in a.domains:
+                        a.domains.add(domain_root)
+                        if len(a.domains) >= 2:
+                            # 第二个独立域名确认后才计分（单域噪声不注册）；
+                            # 封顶 0.30：跨站人名只说明"此人的图在流通"，
+                            # 不能压过正文强署名（0.35，直接指明作者）
+                            bonus = 0.10 if a.confidence == 0 else 0.10
+                            a.confidence = min(0.30, a.confidence + bonus)
+                            a.evidence.append(
+                                f"聚合站人名(跨站一致 x{len(a.domains)}): {c.title[:50]}"
+                            )
+                            a.page_url = a.page_url or c.page_url
+                    else:
+                        a.confidence = min(0.30, a.confidence + 0.05)
+                # URL 路径中的 handle 形态段（fappeningbook.com/pon9019-nude/）
+                for seg in c.page_url.split("/")[3:]:
+                    seg = seg.split("?")[0]
+                    m2 = _HANDLE_LIKE_RE.match(seg)
+                    if (
+                        m2
+                        and _is_handle_like(m2.group(0))
+                        and (m2.group(0).lower(), "未知") in authors
+                    ):
+                        # 只为已被其他证据登记的 handle 记域名（避免噪声 slug 注册新作者）
+                        a = authors[(m2.group(0).lower(), "未知")]
+                        if domain_root not in a.domains:
+                            a.domains.add(domain_root)
+                            if len(a.domains) >= 2:
+                                a.confidence = min(0.30, a.confidence + 0.10)
+                                a.evidence.append(f"URL 路径含该名({domain_root})")
         elif c.engine == "gcv":
             # GCV 只给页面不给作者；作为页面证据挂在未知作者上无效，
             # 但 URL 若是 X 用户页可提取 handle
@@ -134,12 +284,19 @@ def fuse(
                 a.confidence = min(1.0, a.confidence + 0.15)
                 a.evidence.append(f"Google Vision 匹配页: {c.page_url[:70]}")
 
-    # --- 感知哈希硬确认加成 ---
+    # --- 感知哈希加成 ---
+    # 实测教训：转发页同样含同图，"页面含同图"≠"该页账号是作者"。
+    # 跨域名（>=2 站点引用）的 handle 才能给完整作者确认加成；
+    # 单域名命中只给图源页加成（信息量："同图在该账号页面出现过"）。
     for (h_lower, _), a in authors.items():
         sim = phash_scores.get(h_lower, 0.0)
         if sim >= 0.90:
-            a.confidence = min(1.0, a.confidence + 0.20)
-            a.evidence.append(f"感知哈希同图确认: {sim:.0%}")
+            if len(a.domains) >= 2:
+                a.confidence = min(1.0, a.confidence + 0.20)
+                a.evidence.append(f"感知哈希同图确认(跨{len(a.domains)}域): {sim:.0%}")
+            else:
+                a.confidence = min(1.0, a.confidence + 0.10)
+                a.evidence.append(f"同图出现在其页面(单域,或为转发): {sim:.0%}")
         elif sim >= 0.75:
             a.confidence = min(1.0, a.confidence + 0.05)
             a.evidence.append(f"感知哈希可疑相似: {sim:.0%}")
