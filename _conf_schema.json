@@ -34,5 +34,11 @@
         "type": "string",
         "hint": "ascii2d 当前有 Cloudflare 盾；从浏览器复制 cf_clearance cookie 可绕过（会过期）",
         "default": ""
+    },
+    "send_as_forward": {
+        "description": "结果以合并转发消息发送",
+        "type": "bool",
+        "hint": "开启后结果以合并转发节点发送，避免被 t2i 渲染成图片，文字可直接复制；关闭则回退纯文本",
+        "default": true
     }
 }

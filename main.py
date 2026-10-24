@@ -2,7 +2,7 @@ import asyncio
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import Image, Reply
+from astrbot.api.message_components import Image, Node, Nodes, Plain, Reply
 from astrbot.api.star import Context, Star
 
 from . import engines
@@ -35,6 +35,7 @@ class SauceFinderPlugin(Star):
             "saucenao_api_key": "",
             "gcv_api_key": "",
             "ascii2d_cf_clearance": "",
+            "send_as_forward": True,
         }
 
     async def initialize(self):
@@ -141,12 +142,25 @@ class SauceFinderPlugin(Star):
             : self.cfg["max_results"]
         ]
         if top_pages:
-            lines = [f"\nYandex 出处（前 {len(top_pages)} 条）："]
+            lines = [f"Yandex 出处（前 {len(top_pages)} 条）："]
             for i, u in enumerate(top_pages, 1):
                 lines.append(f"{i}. {u}")
             text += "\n" + "\n".join(lines)
         if yandex_url:
             text += f"\n\n完整结果页：{yandex_url}"
+
+        # 6) 发送方式：合并转发（可复制文本）或普通纯文本
+        if self.cfg.get("send_as_forward", True):
+            try:
+                node = Node(
+                    content=[Plain(text)],
+                    uin=event.get_self_id(),
+                    name="找鸡结果",
+                )
+                yield event.chain_result([Nodes(nodes=[node])])
+                return
+            except Exception as e:
+                logger.warning(f"[saucefinder] 合并转发失败，回退纯文本: {e}")
         yield event.plain_result(text)
 
     def _extract_public_url(self, yandex_result_url: str) -> str:
