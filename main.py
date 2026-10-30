@@ -33,7 +33,7 @@ class SauceFinderPlugin(Star):
     2) 候选并列时按 fxTwitter 粉丝数取多者。
     """
 
-    def __init__(self, context: Context):
+    def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
         self.cfg: dict = {
             "max_results": 8,
@@ -44,21 +44,22 @@ class SauceFinderPlugin(Star):
             "ascii2d_cf_clearance": "",
             "serpapi_api_key": "",
             "serpapi_visual_matches": False,
-            "baidu_enabled": True,
+            "baidu_enabled": False,
             "copyseeker_enabled": False,
             "use_llm_candidates": True,
             "follower_tiebreak": True,
             "send_as_forward": True,
         }
 
-    async def initialize(self):
-        cfg = getattr(self.context, "config", None)
-        if cfg:
+        if config:
+            # AstrBot 会把 schema 配置作为构造参数传入（dict / AstrBotConfig）
             for key in self.cfg:
                 try:
-                    self.cfg[key] = cfg.get(key, self.cfg[key])
+                    self.cfg[key] = config.get(key, self.cfg[key])
                 except Exception:
                     pass
+
+    async def initialize(self):
         enabled = [
             "yandex",
             "baidu" if self.cfg["baidu_enabled"] else "-baidu(关)",

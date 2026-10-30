@@ -44,8 +44,8 @@
     "baidu_enabled": {
         "description": "启用百度识图引擎",
         "type": "bool",
-        "hint": "graph.baidu.com 通道，补充同图页面线索；无需 key",
-        "default": true
+        "hint": "graph.baidu.com 通道，补充同图页面线索；无需 key。默认关闭：该接口对无 Cookie 请求风控不稳定（常返回 status=1），建议与 copyseeker 一样按需开启",
+        "default": false
     },
     "copyseeker_enabled": {
         "description": "启用 Copyseeker 引擎",
