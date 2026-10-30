@@ -29,11 +29,47 @@
         "hint": "GCP 启用 Vision API 后获取（付费）；提供 webDetection 匹配页",
         "default": ""
     },
+    "serpapi_api_key": {
+        "description": "SerpApi key（Google Lens 通道）",
+        "type": "string",
+        "hint": "serpapi.com 注册获取（付费/有免费额度）；填写后启用 Google Lens exact_matches 完全匹配",
+        "default": ""
+    },
+    "serpapi_visual_matches": {
+        "description": "Google Lens 额外查询相似图",
+        "type": "bool",
+        "hint": "开启后每次多耗一次 SerpApi 额度；相似图仅作待核实线索",
+        "default": false
+    },
+    "baidu_enabled": {
+        "description": "启用百度识图引擎",
+        "type": "bool",
+        "hint": "graph.baidu.com 通道，补充同图页面线索；无需 key",
+        "default": true
+    },
+    "copyseeker_enabled": {
+        "description": "启用 Copyseeker 引擎",
+        "type": "bool",
+        "hint": "copyseeker.io，常直接给出收录页面；无需 key，服务器访问较慢属正常",
+        "default": false
+    },
     "ascii2d_cf_clearance": {
         "description": "ascii2d cf_clearance cookie",
         "type": "string",
         "hint": "ascii2d 当前有 Cloudflare 盾；从浏览器复制 cf_clearance cookie 可绕过（会过期）",
         "default": ""
+    },
+    "use_llm_candidates": {
+        "description": "无可靠署名时用 LLM 解析来源文字候选",
+        "type": "bool",
+        "hint": "调用 AstrBot 已配置的文本模型分析来源页 title/域名/链接，提取账号线索；候选须经原文证据验证，30 秒超时自动降级",
+        "default": true
+    },
+    "follower_tiebreak": {
+        "description": "候选并列时按 X 粉丝数选取",
+        "type": "bool",
+        "hint": "最优先两名置信度并列且都是 X 账号时，经 fxTwitter 公共接口查粉丝数，取粉丝多者（仅排序用，非归属证明）",
+        "default": true
     },
     "send_as_forward": {
         "description": "结果以合并转发消息发送",

@@ -32,7 +32,9 @@ _DESC_CREDIT_RE = re.compile(
 _DESC_MENTION_RE = re.compile(r"@([A-Za-z0-9_]{2,20})")
 _STATUS_RE = re.compile(r"(?:x\.com|twitter\.com)/(\w{2,20})/status/(\d+)")
 
-_STOPWORDS = {"status", "search", "user", "home", "intent", "sunna", "sc", "i", "web"}
+_STOPWORDS = {"status", "search", "user", "home", "intent", "sunna", "sc", "i", "web",
+              # 正文 credit 通道误报（diffcoin.com 文章 "sc: crypto" 类）
+              "crypto", "bitcoin", "forum", "web"}
 
 # handle 形态：4-20 位字母数字下划线，至少含一个字母（排除纯数字 id/日期）
 _HANDLE_LIKE_RE = re.compile(r"[A-Za-z0-9_]{4,20}")
@@ -112,7 +114,69 @@ _TITLE_NOISE = {
     "misty",
     "models",
     "model",
+    # 实测教训（smoke_ab 真机暴露）：APK/工具站标题的通用词被误注册，
+    # "chat/Android/Download" 踩线 0.30 成为假"可靠署名"
+    "chat",
+    "android",
+    "download",
+    "downloads",
+    "app",
+    "apps",
+    "apk",
+    "ios",
+    "windows",
+    "online",
+    "watch",
+    "hd",
+    "full",
+    "game",
+    "games",
+    "gaming",
+    "anime",
+    "manga",
+    "novel",
+    "comics",
+    "music",
+    "movie",
+    "movies",
+    "shop",
+    "store",
+    "market",
+    "price",
+    "review",
+    "reviews",
+    "guide",
+    "guides",
+    "wiki",
+    "news",
+    "blog",
+    "video",
+    "pics",
+    "images",
+    "gallery",
+    "leak",
+    "onlyfan",
+    "premium",
+    "vip",
+    "mod",
+    "mods",
+    "hack",
+    "unlock",
+    "crack",
+    "torrent",
+    "magnet",
+    "stream",
+    "anime",
+    "hentai",
+    "ecchi",
+    "waifu",
 }
+
+
+# 聚合站跨站人名通道的硬门槛：必须含数字或下划线。
+# 实测：APK/工具站标题的 "Chat/Android/Download" 等通用大写词仅靠
+# 词表挡不住（词表永远补不全）；真实 handle 几乎必含数字/下划线。
+_AGGREGATOR_STRICT_RE = re.compile(r"\d|_")
 
 
 def _is_handle_like(tok: str) -> bool:
@@ -243,6 +307,10 @@ def fuse(
                     tok = raw_tok.strip(",.;:!?()[]").split("-")[0]
                     if not _is_handle_like(tok):
                         continue
+                    # 聚合站通道硬门槛：通用词（Chat/Android/Download…）
+                    # 词表挡不全，用形态过滤——真实 handle 必含数字/下划线
+                    if not _AGGREGATOR_STRICT_RE.search(tok):
+                        continue
                     a = _author(tok, "未知")
                     if domain_root not in a.domains:
                         a.domains.add(domain_root)
@@ -332,11 +400,11 @@ _STRONG_CONFIDENCE = 0.30
 
 
 def format_verdicts(verdicts: list[AuthorVerdict], limit: int = 5) -> str:
-    """格式化融合结果。
+    """格式化融合结果：只突出最优先一条，其余折叠。
 
-    实测教训：镜像页标题 handle 大多是转发者。仅靠弱证据（+0.10
-    累加）的作者不允许以"作者候选"名义出现，折叠进明确标注低可信
-    的列表，避免误导。无任何强证据时明确说明。
+    参考 flj_finder 的策展式输出：用户要的是"这张图是谁的"，
+    一个最优先候选 + 明确标注的低可信折叠列表，好过一屏分数。
+    若最优先两名置信度并列，由调用方先做粉丝数 tie-break 再传入。
     """
     if not verdicts:
         return (
@@ -344,7 +412,6 @@ def format_verdicts(verdicts: list[AuthorVerdict], limit: int = 5) -> str:
             "提示：配置 SauceNAO api_key 可显著提升原帖命中率。"
         )
 
-    # "未知"平台是聚合站跨站人名通道注册的（无平台归属），显示为"身份"
     for v in verdicts:
         if v.platform == "未知":
             v.platform = "身份(站内人名)"
@@ -353,15 +420,21 @@ def format_verdicts(verdicts: list[AuthorVerdict], limit: int = 5) -> str:
 
     lines = []
     if strong:
-        lines.append(f"作者候选（{len(strong)} 位，按置信度排序）：")
-        for v in strong[:limit]:
-            lines.append(f"  @{v.handle}  [{v.platform}]  置信度 {v.confidence:.2f}")
-            if v.post_url:
-                lines.append(f"      原帖: {v.post_url}")
-            elif v.page_url:
-                lines.append(f"      证据页: {v.page_url}")
-            for ev in v.evidence[:3]:
-                lines.append(f"      · {ev}")
+        best = strong[0]
+        lines.append(f"最优先候选：@{best.handle}  [{best.platform}]")
+        lines.append(f"  置信度 {best.confidence:.2f}（正文署名/官方引擎/同图确认）")
+        if best.post_url:
+            lines.append(f"  原帖: {best.post_url}")
+        elif best.page_url:
+            lines.append(f"  证据页: {best.page_url}")
+        for ev in best.evidence[:3]:
+            lines.append(f"  · {ev}")
+        rest = strong[1:]
+        if rest:
+            lines.append(f"其余 {len(rest)} 位候选（置信度较低，已折叠，仅供人工排查）：")
+            for v in rest[: limit - 1]:
+                post = v.post_url or v.page_url
+                lines.append(f"  - @{v.handle}  [{v.platform}]  {v.confidence:.2f}  {post}")
     else:
         lines.append(
             "未找到可靠署名证据（无正文 credit、无官方引擎命中、无同图确认）。"

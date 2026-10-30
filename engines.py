@@ -115,6 +115,10 @@ async def _search_yandex_on(
             resp.raise_for_status()
             html = await resp.text()
 
+    # 验证页 ≠ 无结果：HTTP 200 也可能只是验证页，必须区分失败语义
+    if "cbirSites" not in html and re.search(r"ShowCaptcha|captcha-redirect|Captcha", html, re.I):
+        raise EngineError(f"{host} 返回验证页（搜索未交付，非无结果）")
+
     return result_url, _parse_yandex_html(html)
 
 
@@ -369,4 +373,208 @@ async def search_gcv(
                     weight=w,
                 )
             )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Baidu 识图：graph.baidu.com 上传 → pcsimi 相同/相似结果（线索级）
+# ---------------------------------------------------------------------------
+
+
+async def search_baidu(
+    image_bytes: bytes,
+    *,
+    timeout: int = 25,
+    proxy: str = "",
+) -> list[PostCandidate]:
+    """上传到百度识图并解析相同/相似结果。
+
+    流程：POST /upload 得到 result.url（结果页，含 sign/word 参数）→
+    用同参数请求 /ajax/pcsimi 拿 JSON。结果以 card/same/similar 字段
+    返回，结构不稳定，解析失败即抛 EngineError（引擎级降级）。
+    """
+    import time
+
+    async with _make_session(timeout, proxy) as session:
+        form = aiohttp.FormData()
+        form.add_field("image", image_bytes, filename="blob", content_type="image/jpeg")
+        async with session.post(
+            "https://graph.baidu.com/upload",
+            params={"uptime": str(int(time.time() * 1000)), "tn": "pc", "from": "pc"},
+            data=form,
+            proxy=proxy or None,
+        ) as resp:
+            resp.raise_for_status()
+            data = await resp.json(content_type=None)
+        if data.get("status") != 0:
+            raise EngineError(f"Baidu upload status={data.get('status')}")
+        result = data.get("result") or {}
+        page_url = result.get("url", "")
+        if not page_url:
+            raise EngineError("Baidu upload 未返回结果页 URL")
+        # 结果页 URL 携带 sign/word，换成 ajax 接口取 JSON
+        ajax_url = page_url.replace("/similar", "/ajax/pcsimi")
+        async with session.get(
+            ajax_url, params={"tn": "pc"}, proxy=proxy or None
+        ) as resp:
+            resp.raise_for_status()
+            res = await resp.json(content_type=None)
+
+    out: list[PostCandidate] = []
+    seen: set[str] = set()
+    for card in res.get("card") or []:
+        for item in card.get("same") or []:
+            url = item.get("url", "")
+            if url and url not in seen:
+                seen.add(url)
+                out.append(
+                    PostCandidate(
+                        engine="baidu",
+                        page_url=url,
+                        title=item.get("title", "") or item.get("titleStr", ""),
+                        image_url=item.get("thumbUrl", ""),
+                        weight=0.2,
+                    )
+                )
+    if not out:
+        raise EngineError("Baidu 未解析到结果（结构可能已变更）")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Copyseeker：按图检索收录页面，常直接给出 X 帖子（线索级）
+# ---------------------------------------------------------------------------
+
+
+async def search_copyseeker(
+    image_bytes: bytes,
+    *,
+    timeout: int = 40,
+    proxy: str = "",
+) -> list[PostCandidate]:
+    """上传到 copyseeker.io 并轮询结果。
+
+    流程：POST /api/discovery （multipart image）→ {token} →
+    GET /api/discovery/{token}/results → {results: [...]}。解析失败
+    抛 EngineError（引擎级降级）。
+    """
+    import asyncio
+
+    async with _make_session(timeout, proxy) as session:
+        form = aiohttp.FormData()
+        form.add_field(
+            "image", image_bytes, filename="blob", content_type="image/jpeg"
+        )
+        async with session.post(
+            "https://copyseeker.net/api/discovery",
+            data=form,
+            proxy=proxy or None,
+        ) as resp:
+            resp.raise_for_status()
+            data = await resp.json(content_type=None)
+        token = data.get("token") or data.get("id")
+        if not token:
+            raise EngineError("Copyseeker 未返回 discovery token")
+
+        # 结果可能需要几秒才就绪，最多轮询 6 次、间隔 3s
+        results: list[dict] = []
+        for _ in range(6):
+            await asyncio.sleep(3)
+            async with session.get(
+                f"https://copyseeker.net/api/discovery/{token}/results",
+                proxy=proxy or None,
+            ) as resp:
+                if resp.status != 200:
+                    continue
+                rdata = await resp.json(content_type=None)
+            results = rdata.get("results") or []
+            if results:
+                break
+        if not results:
+            raise EngineError("Copyseeker 超时未取得结果")
+
+    out: list[PostCandidate] = []
+    seen: set[str] = set()
+    for item in results:
+        url = item.get("url", "")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        out.append(
+            PostCandidate(
+                engine="copyseeker",
+                page_url=url,
+                title=item.get("title", ""),
+                image_url=item.get("imageUrl", "") or item.get("thumbUrl", ""),
+                weight=0.2,
+            )
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# SerpApi Google Lens：exact_matches 完全匹配（官方第三方 API，付费）
+# ---------------------------------------------------------------------------
+
+
+async def search_google_lens(
+    image_url: str,
+    *,
+    api_key: str,
+    visual_matches: bool = False,
+    timeout: int = 30,
+    proxy: str = "",
+) -> list[PostCandidate]:
+    """SerpApi google_lens：exact_matches（可加 visual_matches 仅作线索）。
+
+    image_url 需为公网可访问 URL（复用 Yandex 托管原图即可）。
+    safe=off 对应浏览器关闭安全搜索。
+    """
+    if not api_key:
+        raise EngineError("Google Lens 需要 serpapi_api_key")
+    params = {
+        "engine": "google_lens",
+        "type": "exact_matches",
+        "url": image_url,
+        "safe": "off",
+        "api_key": api_key,
+    }
+    async with _make_session(timeout, proxy) as session:
+        out: list[PostCandidate] = []
+        seen: set[str] = set()
+        for kind, weight in [("exact_matches", 0.45)] + (
+            [("visual_matches", 0.15)] if visual_matches else []
+        ):
+            p = dict(params)
+            p["type"] = kind
+            async with session.get(
+                "https://serpapi.com/search.json", params=p, proxy=proxy or None
+            ) as resp:
+                if resp.status != 200:
+                    raise EngineError(
+                        f"Google Lens HTTP {resp.status}（key 无效或额度耗尽）"
+                    )
+                data = await resp.json(content_type=None)
+            if "error" in data:
+                raise EngineError(f"Google Lens: {data['error'][:120]}")
+            for item in data.get(kind, []) or []:
+                link = item.get("link", "")
+                if not link or link in seen:
+                    continue
+                seen.add(link)
+                # source 里的 link 是原帖，优先于 thumbnail 链接
+                source = item.get("source") or {}
+                page = source.get("link") or link
+                if page in seen:
+                    continue
+                seen.add(page)
+                out.append(
+                    PostCandidate(
+                        engine="gcl",
+                        page_url=page,
+                        title=source.get("name", "") or item.get("title", ""),
+                        image_url=item.get("original", ""),
+                        weight=weight,
+                    )
+                )
     return out
